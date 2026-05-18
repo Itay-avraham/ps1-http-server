@@ -4,12 +4,31 @@ const path = require('path');
 
 /* Response Builder Function */
 // Wraps the raw TCP socket with some accessible methods 
-function createResponse(socket) {
+// To make things unique and cool we also use Terminal colors to 
+// prints a color-coded summary of what just happened :)
+function createResponse(socket, req) {
   let statusCode = 200;
   let statusText = 'OK';
   const headers = {};
 
+  // Internal Logging Function (Terminal Colors)
+  const logRequest = () => {
+    const timestamp = new Date().toLocaleTimeString();
+    let color = '\x1b[32m'; // Default to Green for 200s (because green is cool)
+    
+    if (statusCode >= 400) {
+      color = '\x1b[31m'; // Red for errors (because red is... bad? but also cool)
+    } else if (statusCode >= 300) {
+      color = '\x1b[33m'; // Yellow for redirects (because yellow is also cool)
+    }
+
+    const reset = '\x1b[0m'; // and now resets terminal color back to normal
+    
+    console.log(`[${timestamp}] ${color}${statusCode} ${statusText}${reset} | ${req.method} ${req.path}`);
+  };
+
   return {
+
     // Allows setting custom status codes
     status(code) {
       statusCode = code;
@@ -29,13 +48,9 @@ function createResponse(socket) {
 
     // Sends plain text or HTML
     send(text) {
-      // Default to text/plain if no content type was set
       headers['Content-Type'] = headers['Content-Type'] || 'text/plain';
-      
-      // Calculates the actual byte size
       headers['Content-Length'] = Buffer.byteLength(text);
 
-      // Builds the HTTP response string
       let response = `HTTP/1.1 ${statusCode} ${statusText}\r\n`;
       for (const [k, v] of Object.entries(headers)) {
         response += `${k}: ${v}\r\n`;
@@ -43,6 +58,7 @@ function createResponse(socket) {
       response += '\r\n' + text;
       
       socket.write(response);
+      logRequest();
       socket.end();
     },
 
@@ -53,8 +69,7 @@ function createResponse(socket) {
       this.send(body);
     },
 
-    // Reads a file from the disk and sends it to the client + Defining common MIME types
-    // (so the browser knows how to read the file)
+    // Reads a file from the disk and sends it to the client
     sendFile(filePath) {
       const mimeTypes = {
         '.html': 'text/html',
@@ -66,33 +81,49 @@ function createResponse(socket) {
         '.txt': 'text/plain'
       };
 
-      // Extracting the file extension then read the file asynchronously
       const ext = path.extname(filePath).toLowerCase();
       const contentType = mimeTypes[ext] || 'application/octet-stream';
+      
       fs.readFile(filePath, (err, fileData) => {
         if (err) {
-          // If the file doesn't exist on the hard drive
           this.status(404).send('404: File not found on server');
           return;
         }
 
-        // Set the headers for the file
         this.set('Content-Type', contentType);
         this.set('Content-Length', Buffer.byteLength(fileData));
 
-        // Build the HTTP response header string
         let responseHeader = `HTTP/1.1 ${statusCode} ${statusText}\r\n`;
         for (const [k, v] of Object.entries(headers)) {
           responseHeader += `${k}: ${v}\r\n`;
         }
         responseHeader += '\r\n';
 
-        // Send the headers then send the raw file buffer and finally close connection
         socket.write(responseHeader);
         socket.write(fileData); 
+        logRequest();
         socket.end();
       });
+    },
+
+    // Reads an HTML file, replaces {{variables}} and sends the dynamic HTML
+    render(filePath, dataObj) {
+      fs.readFile(filePath, 'utf8', (err, htmlString) => {
+        if (err) {
+          this.status(404).send('404: Template not found');
+          return;
+        }
+
+        let finalHtml = htmlString.replace(/{{(.*?)}}/g, (match, variableName) => {
+          const key = variableName.trim();
+          return dataObj[key] !== undefined ? dataObj[key] : '';
+        });
+
+        this.set('Content-Type', 'text/html');
+        this.send(finalHtml);
+      });
     }
+
   };
 }
 
@@ -187,8 +218,9 @@ function createRouter() {
       }
     }
     
-    // If the loop finishes without returning it must mean that no route matched
-    res.status(404).send('Error 404: Route not defined in router');
+    // If the loop finishes without returning, no route matched
+    const errorPagePath = path.join(__dirname, 'views', '404.html');
+    res.status(404).sendFile(errorPagePath);
   }
 
   return {
@@ -221,6 +253,16 @@ app.get('/public/:filename', (req, res) => {
   res.sendFile(filePath);
 });
 
+app.get('/profile', (req, res) => {
+  const templatePath = path.join(__dirname, 'views', 'profile.html');
+  
+  res.render(templatePath, {
+    name: 'Itay',
+    level: 'Administrator',
+    statusMessage: 'All systems operational.'
+  });
+});
+
 app.post('/api/data', (req, res) => {
   res.status(201).send('Data received via POST request');
 });
@@ -229,7 +271,7 @@ app.post('/api/data', (req, res) => {
 const server = net.createServer((socket) => {
   socket.on('data', (data) => {
     const req = parseRequest(data);
-    const res = createResponse(socket);   
+    const res = createResponse(socket, req);  
     console.log(`[Router] Routing ${req.method} request to ${req.path}`);
     app.handle(req, res);
   });
