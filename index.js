@@ -94,26 +94,93 @@ function parseRequest(rawData) {
   return { method, path, query, headers, body, version };
 }
 
+/* Router Creation */
+// Register routes using .get() and .post() and when a request comes in the router 
+// searches its lists to find the correct matching function. I
+function createRouter() {
+  // Storing the route handlers categorized by HTTP method
+  const routes = {
+    GET: [],
+    POST: [],
+    PUT: [],
+    DELETE: []
+  };
+
+  // Registers a new route
+  function addRoute(method, path, handler) {
+    const paramNames = [];
+    
+    // regex convertation (path -> regex)
+    const regexPath = path.replace(/:([^/]+)/g, (_, paramName) => {
+      paramNames.push(paramName);
+      return '([^/]+)'; 
+    });
+
+    routes[method].push({
+      regex: new RegExp(`^${regexPath}$`),
+      paramNames,
+      handler
+    });
+  }
+
+  // Evaluates an incoming request against registered routes
+  function handle(req, res) {
+    const methodRoutes = routes[req.method] || [];
+
+    for (const route of methodRoutes) {
+      const match = req.path.match(route.regex);
+      
+      if (match) {
+        // extract any parameters from the URL if there is a match
+        req.params = {};
+        route.paramNames.forEach((name, index) => {
+          req.params[name] = match[index + 1];
+        });
+        
+        // developer's callback function
+        return route.handler(req, res);
+      }
+    }
+    
+    // If the loop finishes without returning it must mean that no route matched
+    res.status(404).send('Error 404: Route not defined in router');
+  }
+
+  return {
+    get: (path, handler) => addRoute('GET', path, handler),
+    post: (path, handler) => addRoute('POST', path, handler),
+    handle // Expose the handle function so the TCP server can use it
+  };
+}
+
 /* The TCP Foundation */
 const net = require('net');
 
+// Initializing the router and defining routes (Express-like API)
+const app = createRouter();
+app.get('/api/info', (req, res) => {
+  res.status(200).json({ 
+    message: 'Server is running', 
+    routed: true 
+  });
+});
+
+app.get('/users/:id', (req, res) => {
+  // This testing the dynamic parameter extraction
+  res.status(200).send(`You are looking at the profile for user ID: ${req.params.id}`);
+});
+
+app.post('/api/data', (req, res) => {
+  res.status(201).send('Data received via POST request');
+});
+
+// Creating the server
 const server = net.createServer((socket) => {
   socket.on('data', (data) => {
     const req = parseRequest(data);
-    const res = createResponse(socket); // Initializes the response builder
-    
-    console.log(`Received a ${req.method} request for ${req.path}`);
-    
-    // Simple manual routing test
-    if (req.path === '/api/info') {
-      res.status(200).json({ 
-        message: 'Server is running', 
-        version: '1.0',
-        youAskedFor: req.query 
-      });
-    } else {
-      res.status(404).send('Error 404: Page not found');
-    }
+    const res = createResponse(socket);   
+    console.log(`[Router] Routing ${req.method} request to ${req.path}`);
+    app.handle(req, res);
   });
 
   socket.on('error', (err) => {
