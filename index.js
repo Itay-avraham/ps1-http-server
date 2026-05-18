@@ -1,3 +1,7 @@
+/* built-in modules */
+const fs = require('fs');
+const path = require('path');
+
 /* Response Builder Function */
 // Wraps the raw TCP socket with some accessible methods 
 function createResponse(socket) {
@@ -28,7 +32,7 @@ function createResponse(socket) {
       // Default to text/plain if no content type was set
       headers['Content-Type'] = headers['Content-Type'] || 'text/plain';
       
-      // Calculates the actual byte size (which I've read is safer than text.length)
+      // Calculates the actual byte size
       headers['Content-Length'] = Buffer.byteLength(text);
 
       // Builds the HTTP response string
@@ -47,6 +51,47 @@ function createResponse(socket) {
       const body = JSON.stringify(data);
       this.set('Content-Type', 'application/json');
       this.send(body);
+    },
+
+    // Reads a file from the disk and sends it to the client + Defining common MIME types
+    // (so the browser knows how to read the file)
+    sendFile(filePath) {
+      const mimeTypes = {
+        '.html': 'text/html',
+        '.css': 'text/css',
+        '.js': 'application/javascript',
+        '.png': 'image/png',
+        '.jpg': 'image/jpeg',
+        '.json': 'application/json',
+        '.txt': 'text/plain'
+      };
+
+      // Extracting the file extension then read the file asynchronously
+      const ext = path.extname(filePath).toLowerCase();
+      const contentType = mimeTypes[ext] || 'application/octet-stream';
+      fs.readFile(filePath, (err, fileData) => {
+        if (err) {
+          // If the file doesn't exist on the hard drive
+          this.status(404).send('404: File not found on server');
+          return;
+        }
+
+        // Set the headers for the file
+        this.set('Content-Type', contentType);
+        this.set('Content-Length', Buffer.byteLength(fileData));
+
+        // Build the HTTP response header string
+        let responseHeader = `HTTP/1.1 ${statusCode} ${statusText}\r\n`;
+        for (const [k, v] of Object.entries(headers)) {
+          responseHeader += `${k}: ${v}\r\n`;
+        }
+        responseHeader += '\r\n';
+
+        // Send the headers then send the raw file buffer and finally close connection
+        socket.write(responseHeader);
+        socket.write(fileData); 
+        socket.end();
+      });
     }
   };
 }
@@ -166,8 +211,14 @@ app.get('/api/info', (req, res) => {
 });
 
 app.get('/users/:id', (req, res) => {
-  // This testing the dynamic parameter extraction
+  // This is testing the dynamic parameter extraction
   res.status(200).send(`You are looking at the profile for user ID: ${req.params.id}`);
+});
+
+// Route for static files
+app.get('/public/:filename', (req, res) => {
+  const filePath = path.join(__dirname, 'public', req.params.filename);
+  res.sendFile(filePath);
 });
 
 app.post('/api/data', (req, res) => {
